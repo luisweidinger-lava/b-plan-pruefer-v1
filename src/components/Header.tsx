@@ -31,7 +31,7 @@ export function Header() {
 
       {/* Data source note */}
       <p className="text-xs mt-3" style={{ color: "#3E6259", opacity: 0.7 }}>
-        Datenquelle: LGV Hamburg (geodienste.hamburg.de) · Aktuell nur Hamburg verfügbar
+        Datenquelle: LGV Hamburg · Geoportal Berlin · Aktuell Hamburg und Berlin verfügbar
       </p>
     </header>
   );

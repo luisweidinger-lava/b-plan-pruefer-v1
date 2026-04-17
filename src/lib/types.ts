@@ -22,6 +22,10 @@ export type GeocodeResult = {
   lat: number;
   lon: number;
   confirmedAddress: string;
+  // ISO 3166-2 state code from Nominatim (e.g. "DE-HH", "DE-BE") — used for provider routing.
+  // Hamburg and Berlin are city-states and have no Nominatim "state" field; this uses
+  // the ISO3166-2-lvl4 field which is reliably present for all German addresses.
+  stateCode?: string;
 };
 
 // The normalized output contract returned by the API route

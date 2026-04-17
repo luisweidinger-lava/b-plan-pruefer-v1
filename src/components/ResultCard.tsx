@@ -225,18 +225,13 @@ function NotVerifiableCard({ result }: Props) {
       </div>
 
       <div className="px-6 py-5" style={{ backgroundColor: "#EAE6DF" }}>
-        {isOutage ? (
-          <p className="text-sm leading-relaxed" style={{ color: "#1F2D2A" }}>
-            Der offizielle Geodatendienst (LGV Hamburg) ist momentan nicht
-            erreichbar. Das Ergebnis kann daher aktuell nicht verifiziert
-            werden. Bitte versuche es später erneut.
-          </p>
-        ) : (
-          <p className="text-sm leading-relaxed" style={{ color: "#1F2D2A" }}>
-            {result.notes?.[0] ??
-              "Die Adresse konnte nicht verarbeitet werden."}
-          </p>
-        )}
+        <p className="text-sm leading-relaxed" style={{ color: "#1F2D2A" }}>
+          {result.notes?.[0] ?? (
+            isOutage
+              ? "Der Geodatendienst ist momentan nicht erreichbar. Bitte versuche es später erneut."
+              : "Die Adresse konnte nicht verarbeitet werden."
+          )}
+        </p>
       </div>
     </div>
   );

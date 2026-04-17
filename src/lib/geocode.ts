@@ -11,6 +11,7 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult> {
   url.searchParams.set("q", address);
   url.searchParams.set("format", "json");
   url.searchParams.set("limit", "1");
+  url.searchParams.set("addressdetails", "1");
 
   // Nominatim requires a User-Agent identifying the application (ToS requirement)
   const userAgent =
@@ -56,5 +57,8 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult> {
     lat: parseFloat(first.lat),
     lon: parseFloat(first.lon),
     confirmedAddress: first.display_name as string,
+    // ISO3166-2-lvl4 is reliably present for all German addresses including city-states
+    // (Hamburg: "DE-HH", Berlin: "DE-BE"). The "state" field is absent for city-states.
+    stateCode: first.address?.["ISO3166-2-lvl4"] as string | undefined,
   };
 }

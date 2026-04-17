@@ -5,15 +5,18 @@
 //
 // Flow:
 //   1. Validate the input address
-//   2. Geocode address → lat/lon
-//   3. Fetch B-Plan candidates from Hamburg WFS (bounding box query)
-//   4. Filter candidates by exact point-in-polygon check
-//   5. Rank matches (rechtskräftig first, then newest date)
-//   6. Assemble and return the normalized result
+//   2. Geocode address → lat/lon + state
+//   3. Route to the correct provider based on state (Hamburg or Berlin)
+//   4. Fetch B-Plan candidates from the provider (bounding box query)
+//   5. Filter candidates by exact point-in-polygon check
+//   6. Rank matches (rechtskräftig first, then newest date)
+//   7. Assemble and return the normalized result
 
 import { NextRequest, NextResponse } from "next/server";
 import { geocodeAddress } from "@/lib/geocode";
 import { HamburgWfsProvider } from "@/lib/providers/hamburg-wfs";
+import { BerlinWfsProvider } from "@/lib/providers/berlin-wfs";
+import { BPlanProvider } from "@/lib/providers/base";
 import { filterByPointInPolygon } from "@/lib/geo/pointInPolygon";
 import { rankPlans } from "@/lib/geo/rankPlans";
 import { BPlanError, isUpstreamFailure } from "@/lib/utils/errors";
@@ -63,7 +66,7 @@ async function handleRequest(request: NextRequest) {
     return NextResponse.json(result, { status: 400 });
   }
 
-  // Step 2: Geocode address → lat/lon
+  // Step 2: Geocode address → lat/lon + state
   let geocoded;
   try {
     geocoded = await geocodeAddress(address);
@@ -96,8 +99,34 @@ async function handleRequest(request: NextRequest) {
 
   const { lat, lon, confirmedAddress } = geocoded;
 
-  // Step 3: Fetch B-Plan candidates from Hamburg WFS (BBOX query)
-  const provider = new HamburgWfsProvider();
+  // Step 3: Select provider based on the geocoded state
+  // We use the ISO 3166-2 state code (ISO3166-2-lvl4) from Nominatim — this field is
+  // reliably present for all German addresses, including city-states like Hamburg and
+  // Berlin which have no separate "state" field in the Nominatim address object.
+  const stateCode = geocoded.stateCode ?? "";
+
+  let provider: BPlanProvider | null = null;
+  if (stateCode === "DE-HH") {
+    provider = new HamburgWfsProvider();
+  } else if (stateCode === "DE-BE") {
+    provider = new BerlinWfsProvider();
+  }
+
+  // Unsupported state — return cleanly without querying any WFS
+  if (!provider) {
+    const result: NormalizedPlanResult = {
+      query: { inputAddress: address, confirmedAddress, lat, lon },
+      status: "no_plan_found",
+      sourceStatus: "ok",
+      notes: [
+        "Bebauungsplan-Daten sind aktuell nur für Hamburg und Berlin verfügbar. " +
+          "Diese Adresse liegt möglicherweise außerhalb des unterstützten Bereichs.",
+      ],
+    };
+    return NextResponse.json(result);
+  }
+
+  // Step 4: Fetch B-Plan candidates from the selected provider (BBOX query)
   let candidates;
   try {
     candidates = await provider.fetchPlans(lat, lon);
@@ -108,7 +137,7 @@ async function handleRequest(request: NextRequest) {
         status: "not_verifiable",
         sourceStatus: "upstream_unavailable",
         notes: [
-          "Der Hamburg-Geodatendienst (LGV) ist momentan nicht erreichbar. " +
+          `Der Geodatendienst (${provider.name}) ist momentan nicht erreichbar. ` +
             "Das Ergebnis kann daher aktuell nicht verifiziert werden.",
         ],
       };
@@ -117,34 +146,25 @@ async function handleRequest(request: NextRequest) {
     throw err;
   }
 
-  // Step 4: Filter candidates by exact point-in-polygon
+  // Step 5: Filter candidates by exact point-in-polygon
   // (The BBOX query returns a generous area; PiP narrows to the exact property)
   const matches = filterByPointInPolygon(lat, lon, candidates);
 
-  // Step 5: Rank matches — rechtskräftig first, then newest date
+  // Step 6: Rank matches — rechtskräftig first, then newest date
   const ranked = rankPlans(matches);
 
-  // Step 6: Assemble result
+  // Step 7: Assemble result
 
   // No plan found for this address
   if (ranked.length === 0) {
     const notes: string[] = [];
     if (candidates.length === 0) {
-      // WFS returned zero features in the bounding box.
-      // Two possible reasons: address is outside Hamburg, or it's in Hamburg
-      // but in an area without a registered B-Plan (e.g. port, water, parks).
-      const isLikelyHamburg = confirmedAddress.toLowerCase().includes("hamburg");
-      if (isLikelyHamburg) {
-        notes.push(
-          "Für diese Adresse ist kein Bebauungsplan im Hamburger Register vorhanden. " +
-            "Manche Bereiche (z.B. Hafen, Grünflächen) sind planungsrechtlich anders geregelt."
-        );
-      } else {
-        notes.push(
-          "Bebauungsplan-Daten sind aktuell nur für Hamburg verfügbar. " +
-            "Diese Adresse liegt möglicherweise außerhalb des unterstützten Bereichs."
-        );
-      }
+      // WFS returned zero features in the bounding box — address is in a supported state
+      // but either has no registered B-Plan or lies in a special-use area.
+      notes.push(
+        "Für diese Adresse ist kein Bebauungsplan im Register vorhanden. " +
+          "Manche Bereiche (z.B. Hafen, Grünflächen, Gewässer) sind planungsrechtlich anders geregelt."
+      );
     }
     const result: NormalizedPlanResult = {
       query: { inputAddress: address, confirmedAddress, lat, lon },
@@ -157,6 +177,13 @@ async function handleRequest(request: NextRequest) {
 
   // Plan found — return the top-ranked one as the primary result
   const primary = ranked[0];
+
+  // Hamburg-specific portal deep link (only Hamburg has this; Berlin uses direct document links)
+  const portalUrl =
+    provider instanceof HamburgWfsProvider
+      ? `https://geoportal-hamburg.de/planportal/?QUERY=${encodeURIComponent(extractStreetAndNumber(confirmedAddress))}`
+      : undefined;
+
   const result: NormalizedPlanResult = {
     query: { inputAddress: address, confirmedAddress, lat, lon },
     status: "plan_found",
@@ -167,7 +194,7 @@ async function handleRequest(request: NextRequest) {
       status: primary.status === "rechtskraeftig" ? "Rechtskräftig" : "Im Verfahren",
       authority: primary.authority,
       source: provider.name,
-      portalUrl: `https://geoportal-hamburg.de/planportal/?QUERY=${encodeURIComponent(extractStreetAndNumber(confirmedAddress))}`,
+      portalUrl,
       documentUrl: primary.documentUrl,
       pageUrl: primary.pageUrl,
       date: primary.date,
